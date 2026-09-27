@@ -11,6 +11,31 @@ from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 
+# OpenJEV is a community gateway to the same Jev model built by TypeSafe.
+# TypeSafe stays the default; OpenJEV is opt-in via JEV_PROVIDER=openjev or
+# when only OPENJEV_API_KEY is set (no TYPESAFE_API_KEY).
+_OPENJEV_ENDPOINT = "https://api.openjev.sh/v1/systemone"
+_TYPESAFE_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
+
+
+def provider_config():
+    """Return (endpoint, key, model) following the provider selection rule.
+
+    1. JEV_PROVIDER=openjev → OpenJEV (explicit choice wins).
+    2. TYPESAFE_API_KEY set → TypeSafe (unchanged default).
+    3. Only OPENJEV_API_KEY set → OpenJEV.
+    """
+    explicit = os.environ.get("JEV_PROVIDER", "").strip().lower()
+    typesafe_key = os.environ.get("TYPESAFE_API_KEY")
+    openjev_key = os.environ.get("OPENJEV_API_KEY")
+    if explicit == "openjev" or (explicit != "typesafe" and not typesafe_key and openjev_key):
+        if not openjev_key:
+            raise RuntimeError("JEV_PROVIDER=openjev but OPENJEV_API_KEY is not set; no action executed.")
+        return _OPENJEV_ENDPOINT, openjev_key, os.environ.get("OPENJEV_MODEL", "openjev")
+    if not typesafe_key:
+        raise RuntimeError("No TYPESAFE_API_KEY or OPENJEV_API_KEY set; no action executed.")
+    return _TYPESAFE_ENDPOINT, typesafe_key, os.environ.get("TYPESAFE_MODEL", "jev-latest")
+
 
 def post_json(url, key, body):
     for attempt in range(3):
@@ -104,8 +129,9 @@ def choose(state, goal, history):
             },
             "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
         }
+    endpoint, key, model_id = provider_config()
     body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "model": model_id,
         "state": {
             "page": {k: state[k] for k in ("url", "title", "text")},
             "elements": elements,
@@ -116,7 +142,7 @@ def choose(state, goal, history):
         "questions": questions,
     }
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    result = post_json(endpoint, key, body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
